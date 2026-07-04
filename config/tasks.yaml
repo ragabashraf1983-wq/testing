@@ -1,0 +1,43 @@
+# Autonomous Academic Research Agent - Task Definitions (CrewAI Style)
+
+retrieve_literature_task:
+  description: >
+    Conduct a systematic search across academic databases (ArXiv, OpenAlex) for the topic: '{topic}'.
+    Extract at least 3-5 highly relevant papers. For each paper, record title, authors, publication date,
+    abstract, citation count, and methodological approach. Synthesize these into a comprehensive literature review.
+  expected_output: >
+    A structured list of paper metadata objects along with an executive literature summary detailing
+    methodological paradigms, empirical consensus, and existing disagreements.
+  agent: literature_scout
+
+analyze_gaps_task:
+  description: >
+    Review the literature summary and extracted papers for '{topic}'. Critically evaluate the state of the art
+    to identify 2 to 3 major scientific gaps, scalability bottlenecks, or conflicting empirical findings.
+    For the highest priority gap, formulate a precise research question and a testable scientific hypothesis.
+  expected_output: >
+    A JSON-structured array of identified research gaps along with 1-2 formalized research questions and
+    hypotheses specifying the required methodology (computational_simulation, theoretical_synthesis, or hybrid).
+  agent: gap_analyst
+
+execute_research_task:
+  description: >
+    Based on the formulated hypothesis for '{topic}', design and execute the investigation.
+    If the hypothesis involves algorithmic scalability, computational efficiency, or statistical modeling,
+    write and execute a clean Python script to simulate the phenomenon, generate comparative data, and produce a Matplotlib chart.
+    If theoretical synthesis is required, construct rigorous comparative frameworks.
+  expected_output: >
+    A complete simulation report containing executed Python code, standard output metrics, statistical summary findings,
+    and reference to any generated visualization charts (e.g., simulation_chart.png).
+  agent: methodologist
+
+draft_manuscript_task:
+  description: >
+    Synthesize all accumulated research artifacts (literature review, identified gaps, research questions,
+    hypotheses, executed Python simulation code, statistical results, and charts) into a complete, formal,
+    publication-ready academic manuscript in clean Markdown (.md).
+  expected_output: >
+    A full academic paper formatted in Markdown containing: Title, Author Block, Abstract, Introduction,
+    Related Work, Methodology, Results & Empirical Analysis (incorporating tabular simulation data),
+    Discussion, Conclusion, and References.
+  agent: academic_author
