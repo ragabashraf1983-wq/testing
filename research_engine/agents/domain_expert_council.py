@@ -1,9 +1,10 @@
 """
-v5 Domain Expert Council — 7 specialist agents that evaluate from their domain lens
-and are encouraged to dissent rather than agree automatically.
+v5 Domain Expert Council — 7 specialist agents with robust JSON extraction.
+Falls back to text-based scoring if LLM fails structured JSON.
 """
 
 import json
+import re
 from typing import Dict, List, Any
 from dataclasses import dataclass, field
 
@@ -15,18 +16,16 @@ from research_engine.llm_client import LocalLLMClient
 class ExpertReview:
     expert_name: str
     domain: str
-    score: float              # 0.0 - 1.0 overall quality
-    confidence: float         # 0.0 - 1.0 how sure the expert is
+    score: float
+    confidence: float
     criticisms: List[str] = field(default_factory=list)
     suggestions: List[str] = field(default_factory=list)
     endorsements: List[str] = field(default_factory=list)
-    dissent: bool = False     # True if expert fundamentally disagrees with direction
+    dissent: bool = False
     dissent_reason: str = ""
 
 
 class DomainExpertAgent:
-    """A single domain expert with a specific persona."""
-
     EXPERTS_CONFIG = [
         {"name": "LinguistExpert", "persona": "Senior Professor of Linguistics and Technical Writing",
          "focus": ["grammar", "style", "clarity", "readability", "terminology", "narrative flow"], "weight": 1.0},
@@ -51,6 +50,52 @@ class DomainExpertAgent:
         self.weight = weight
         self.llm = llm_client
 
+    def _parse_text_fallback(self, raw: str) -> ExpertReview:
+        """If JSON fails, extract scores/verdicts from free text."""
+        score = 0.5
+        confidence = 0.5
+        dissent = False
+        criticisms = []
+        suggestions = []
+        endorsements = []
+        dissent_reason = ""
+
+        # Try to find score patterns
+        score_match = re.search(r'score[:\s=]+(\d+(?:\.\d+)?)', raw, re.I)
+        if score_match:
+            score = float(score_match.group(1))
+
+        conf_match = re.search(r'confidence[:\s=]+(\d+(?:\.\d+)?)', raw, re.I)
+        if conf_match:
+            confidence = float(conf_match.group(1))
+
+        if re.search(r'\bdissent\b[:\s=]*true', raw, re.I):
+            dissent = True
+
+        # Extract bullet points as criticisms/suggestions
+        for line in raw.split('\n'):
+            line = line.strip()
+            if line.startswith('- ') or line.startswith('* '):
+                item = line[2:]
+                if any(w in item.lower() for w in ['criticism', 'flaw', 'weak', 'problem', 'error', 'issue']):
+                    criticisms.append(item)
+                elif any(w in item.lower() for w in ['suggest', 'improve', 'recommend', 'should', 'could']):
+                    suggestions.append(item)
+                elif any(w in item.lower() for w in ['endorse', 'agree', 'strength', 'correct', 'valid']):
+                    endorsements.append(item)
+
+        return ExpertReview(
+            expert_name=self.name,
+            domain=self.persona,
+            score=min(1.0, max(0.0, score)),
+            confidence=min(1.0, max(0.0, confidence)),
+            criticisms=criticisms or ["LLM failed to produce structured JSON. Fallback parsing used."],
+            suggestions=suggestions or ["Consider using a stronger LLM model for better evaluation."],
+            endorsements=endorsements,
+            dissent=dissent,
+            dissent_reason=dissent_reason,
+        )
+
     def evaluate(self, content: str, context: str = "") -> ExpertReview:
         system = f"You are {self.persona}. Your expertise covers: {', '.join(self.focus_areas)}. Be critical. Do NOT agree automatically."
         prompt = f"""
@@ -60,18 +105,18 @@ Context: {context}
 
 Content to evaluate:
 ---
-{content[:12000]}
+{content[:8000]}
 ---
 
-Provide your evaluation in this exact JSON format:
+Provide your evaluation in this EXACT JSON format (no markdown, no code blocks, raw JSON only):
 {{
   "score": <float 0.0-1.0>,
   "confidence": <float 0.0-1.0>,
-  "criticisms": ["..."],
-  "suggestions": ["..."],
-  "endorsements": ["..."],
-  "dissent": <true/false>,
-  "dissent_reason": "..."
+  "criticisms": ["specific criticism 1", "specific criticism 2"],
+  "suggestions": ["specific suggestion 1", "specific suggestion 2"],
+  "endorsements": ["specific endorsement 1"],
+  "dissent": <true or false>,
+  "dissent_reason": "<reason if dissenting>"
 }}
 
 Rules:
@@ -80,29 +125,20 @@ Rules:
 - Suggest concrete improvements, not generic praise.
 """
         raw = self.llm.generate(prompt, system, max_tokens=2200)
-        try:
-            # Try to extract JSON from the response
-            start = raw.find("{")
-            end = raw.rfind("}")
-            if start != -1 and end != -1:
-                data = json.loads(raw[start:end+1])
-            else:
-                data = json.loads(raw.strip().strip("`").replace("json", "").strip())
-        except Exception:
-            data = {
-                "score": 0.5, "confidence": 0.5,
-                "criticisms": ["JSON parsing failed", raw[:500]],
-                "suggestions": [], "endorsements": [],
-                "dissent": False, "dissent_reason": ""
-            }
+
+        # Try robust JSON extraction first
+        data = self.llm.extract_json(raw)
+        if data is None or data.get("_parse_error"):
+            # Fallback to text parsing
+            return self._parse_text_fallback(raw)
 
         return ExpertReview(
             expert_name=self.name,
             domain=self.persona,
             score=float(data.get("score", 0.5)),
             confidence=float(data.get("confidence", 0.5)),
-            criticisms=data.get("criticisms", []),
-            suggestions=data.get("suggestions", []),
+            criticisms=data.get("criticisms", []) or ["No criticisms provided."],
+            suggestions=data.get("suggestions", []) or ["No suggestions provided."],
             endorsements=data.get("endorsements", []),
             dissent=data.get("dissent", False),
             dissent_reason=data.get("dissent_reason", ""),
@@ -110,8 +146,6 @@ Rules:
 
 
 class DomainExpertCouncil:
-    """Orchestrates all domain experts and computes consensus."""
-
     def __init__(self, llm_client: LocalLLMClient):
         self.experts: List[DomainExpertAgent] = []
         for ecfg in DomainExpertAgent.EXPERTS_CONFIG:
@@ -142,6 +176,10 @@ class DomainExpertCouncil:
             all_criticisms.extend(r.criticisms)
             all_suggestions.extend(r.suggestions)
 
+        # Detect LLM failure pattern: all scores identical to 0.5
+        scores = [r.score for r in reviews]
+        llm_failure = len(set(scores)) == 1 and scores[0] == 0.5
+
         return {
             "reviews": reviews,
             "average_score": avg_score,
@@ -150,4 +188,5 @@ class DomainExpertCouncil:
             "dissenters": [r.expert_name for r in dissenters],
             "consolidated_criticisms": all_criticisms,
             "consolidated_suggestions": all_suggestions,
+            "llm_failure_detected": llm_failure,
         }

@@ -1,9 +1,9 @@
 """
 v5 Peer Review Board — Editor + 5 specialist reviewers enforcing Q1/Q2 standards.
-Can loop back to revision if standards are not met.
+Robust JSON extraction with LLM failure detection.
 """
 
-import json
+import re
 from typing import Dict, List, Any
 from dataclasses import dataclass, field
 
@@ -15,14 +15,12 @@ from research_engine.llm_client import LocalLLMClient
 class ReviewDecision:
     reviewer: str
     verdict: str      # ACCEPT, MINOR_REVISION, MAJOR_REVISION, REJECT
-    score: float      # 0.0 - 1.0
+    score: float
     comments: str
     specific_issues: List[str] = field(default_factory=list)
 
 
 class PeerReviewerAgent:
-    """Individual reviewer with a specific focus area."""
-
     REVIEWERS_CONFIG = [
         {"name": "MethodologyReviewer", "focus": ["study_design", "data_collection", "reproducibility", "ethical_compliance"]},
         {"name": "LiteratureReviewer", "focus": ["citation_depth", "gap_analysis", "prior_work_alignment", "scholarship"]},
@@ -35,6 +33,42 @@ class PeerReviewerAgent:
         self.name = name
         self.focus = focus
         self.llm = llm_client
+
+    def _parse_text_fallback(self, raw: str) -> ReviewDecision:
+        """Extract verdict and score from free text if JSON fails."""
+        score = 0.5
+        verdict = "MAJOR_REVISION"
+        comments = raw[:1500]
+        issues = []
+
+        # Score extraction
+        score_match = re.search(r'score[:\s=]+(\d+(?:\.\d+)?)', raw, re.I)
+        if score_match:
+            score = float(score_match.group(1))
+
+        # Verdict extraction
+        if re.search(r'\bACCEPT\b', raw, re.I):
+            verdict = "ACCEPT"
+        elif re.search(r'\bMINOR_REVISION\b', raw, re.I):
+            verdict = "MINOR_REVISION"
+        elif re.search(r'\bMAJOR_REVISION\b', raw, re.I):
+            verdict = "MAJOR_REVISION"
+        elif re.search(r'\bREJECT\b', raw, re.I):
+            verdict = "REJECT"
+
+        # Issues from bullets
+        for line in raw.split('\n'):
+            line = line.strip()
+            if line.startswith('- ') or line.startswith('* '):
+                issues.append(line[2:])
+
+        return ReviewDecision(
+            reviewer=self.name,
+            verdict=verdict,
+            score=min(1.0, max(0.0, score)),
+            comments=comments,
+            specific_issues=issues or ["LLM failed to produce structured JSON. Fallback parsing used."],
+        )
 
     def review(self, paper_text: str, review_round: int, state: ResearchState = None) -> ReviewDecision:
         system = (
@@ -49,10 +83,10 @@ Review the following paper draft from your specialist perspective ({', '.join(se
 
 Paper Draft:
 ---
-{paper_text[:10000]}
+{paper_text[:8000]}
 ---
 
-Provide your review in this exact JSON format:
+Provide your review in this EXACT JSON format (no markdown, no code blocks, raw JSON only):
 {{
   "verdict": "ACCEPT|MINOR_REVISION|MAJOR_REVISION|REJECT",
   "score": <float 0.0-1.0>,
@@ -67,34 +101,46 @@ Verdict rules:
 - REJECT: Score < 0.40, not suitable.
 """
         raw = self.llm.generate(prompt, system, max_tokens=2200)
-        try:
-            start = raw.find("{")
-            end = raw.rfind("}")
-            if start != -1 and end != -1:
-                data = json.loads(raw[start:end+1])
-            else:
-                data = json.loads(raw.strip().strip("`").replace("json", "").strip())
-        except Exception:
-            data = {"verdict": "MAJOR_REVISION", "score": 0.5, "comments": raw[:1000], "specific_issues": ["JSON parse error — manual review needed."]}
 
-        decision = ReviewDecision(
+        data = self.llm.extract_json(raw)
+        if data is None or data.get("_parse_error"):
+            return self._parse_text_fallback(raw)
+
+        return ReviewDecision(
             reviewer=self.name,
             verdict=data.get("verdict", "MAJOR_REVISION"),
             score=float(data.get("score", 0.5)),
             comments=data.get("comments", ""),
             specific_issues=data.get("specific_issues", []),
         )
-        if state:
-            state.add_log(self.name, f"Peer Review Round {review_round}", f"Verdict: {decision.verdict}, Score: {decision.score}")
-        return decision
 
 
 class EditorAgent:
-    """Chief Editor who aggregates reviews and makes final publication decision."""
-
     def __init__(self, llm_client: LocalLLMClient):
         self.name = "EditorAgent"
         self.llm = llm_client
+
+    def _parse_text_fallback(self, raw: str) -> Dict[str, Any]:
+        score = 0.5
+        verdict = "MAJOR_REVISION"
+        if re.search(r'\bACCEPT\b', raw, re.I):
+            verdict = "ACCEPT"
+        elif re.search(r'\bMINOR_REVISION\b', raw, re.I):
+            verdict = "MINOR_REVISION"
+        elif re.search(r'\bMAJOR_REVISION\b', raw, re.I):
+            verdict = "MAJOR_REVISION"
+        elif re.search(r'\bREJECT\b', raw, re.I):
+            verdict = "REJECT"
+        score_match = re.search(r'score[:\s=]+(\d+(?:\.\d+)?)', raw, re.I)
+        if score_match:
+            score = float(score_match.group(1))
+        return {
+            "editorial_verdict": verdict,
+            "overall_score": score,
+            "letter_to_authors": raw[:1500],
+            "must_address": ["LLM failed to produce structured JSON. Manual review needed."],
+            "optional_suggestions": [],
+        }
 
     def editorial_decision(self, decisions: List[ReviewDecision], review_round: int, state: ResearchState = None) -> Dict[str, Any]:
         system = (
@@ -112,7 +158,7 @@ You have received the following peer reviews:
 
 {reviews_text}
 
-Synthesize these into a final editorial decision. Provide JSON:
+Synthesize these into a final editorial decision. Provide EXACT JSON (no markdown, no code blocks, raw JSON only):
 {{
   "editorial_verdict": "ACCEPT|MINOR_REVISION|MAJOR_REVISION|REJECT",
   "overall_score": <float>,
@@ -122,21 +168,10 @@ Synthesize these into a final editorial decision. Provide JSON:
 }}
 """
         raw = self.llm.generate(prompt, system, max_tokens=2200)
-        try:
-            start = raw.find("{")
-            end = raw.rfind("}")
-            if start != -1 and end != -1:
-                data = json.loads(raw[start:end+1])
-            else:
-                data = json.loads(raw.strip().strip("`").replace("json", "").strip())
-        except Exception:
-            data = {
-                "editorial_verdict": "MAJOR_REVISION",
-                "overall_score": 0.5,
-                "letter_to_authors": raw[:1500],
-                "must_address": ["Parse error — manual review needed."],
-                "optional_suggestions": [],
-            }
+
+        data = self.llm.extract_json(raw)
+        if data is None or data.get("_parse_error"):
+            data = self._parse_text_fallback(raw)
 
         if state:
             state.add_log(self.name, f"Editorial Decision Round {review_round}", f"Verdict: {data['editorial_verdict']}, Score: {data['overall_score']}")
@@ -144,8 +179,6 @@ Synthesize these into a final editorial decision. Provide JSON:
 
 
 class PeerReviewBoard:
-    """Full board: Editor + 5 Reviewers."""
-
     def __init__(self, llm_client: LocalLLMClient):
         self.editor = EditorAgent(llm_client)
         self.reviewers: List[PeerReviewerAgent] = []
@@ -166,9 +199,13 @@ class PeerReviewBoard:
         scores = [d.score for d in decisions]
         avg_score = sum(scores) / len(scores) if scores else 0.0
 
+        # Detect LLM failure: all identical scores
+        all_same = len(set(scores)) == 1
+        llm_failure = all_same and scores[0] in (0.5, 0.0)
+
         verdict = editorial["editorial_verdict"]
         if verdict == "ACCEPT" and avg_score < 0.75:
-            verdict = "MINOR_REVISION"  # editorial override safety
+            verdict = "MINOR_REVISION"
 
         return {
             "round": review_round,
@@ -178,4 +215,5 @@ class PeerReviewBoard:
             "final_verdict": verdict,
             "must_address": editorial.get("must_address", []),
             "letter_to_authors": editorial.get("letter_to_authors", ""),
+            "llm_failure_detected": llm_failure,
         }

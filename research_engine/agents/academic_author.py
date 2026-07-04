@@ -1,6 +1,6 @@
 """
-v5 Academic Author Agent — Chunked long-form generation to prevent local model context collapse.
-Drafts papers section-by-section with memory and expert feedback integration.
+v5 Academic Author Agent — Chunked long-form generation with quality validation.
+Validates each section is non-empty and retries if LLM produces garbage.
 """
 
 import os
@@ -14,8 +14,7 @@ from research_engine.domain_engine import DomainIntelligenceEngine
 
 
 class AcademicAuthorAgent:
-    """Agent responsible for writing publication-grade deliverables under strict 'Prof' academic standards.
-    v5: Uses chunked section drafting to respect local LLM context limits."""
+    """Agent responsible for writing publication-grade deliverables."""
 
     STANDARD_OUTLINE = [
         "Abstract",
@@ -29,6 +28,8 @@ class AcademicAuthorAgent:
         "References",
     ]
 
+    MIN_SECTION_LENGTH = 200  # Minimum chars for a valid section
+
     def __init__(self, llm_client: LocalLLMClient):
         self.llm = llm_client
         self.name = "Academic Author & Journal Editor-in-Chief"
@@ -38,14 +39,11 @@ class AcademicAuthorAgent:
 
         disc, method, _ = DomainIntelligenceEngine.classify_domain_and_methodology(state.topic)
 
-        # v5: Build outline if not already present
         if not state.outline:
             self._build_outline(state, disc)
 
-        # v5: Chunked section drafting
         self._draft_sections(state, disc, method)
 
-        # Compile final paper
         paper = self._compile_paper(state)
         state.final_manuscript_md = paper
         state.progress_percentage = 100
@@ -53,31 +51,22 @@ class AcademicAuthorAgent:
         return state
 
     def _build_outline(self, state: ResearchState, disc: str):
-        system = "You are an academic research architect. Design a rigorous paper outline. Return ONLY a JSON array of strings."
+        system = "You are an academic research architect. Return ONLY a JSON array of strings."
         prompt = f"""
 Topic: {state.topic}
 Domain: {disc}
 Target Deliverable: {state.target_deliverable}
 
 Generate a detailed academic paper outline as a JSON array of strings.
-Each string should be a major section title. Include 8-12 sections.
-Include: Abstract, Introduction, Literature Review, Methodology, Results, Discussion, Conclusion, References.
-Add domain-specific sections if needed.
+Include 8-12 sections: Abstract, Introduction, Literature Review, Methodology, Results, Discussion, Conclusion, References.
 
-Output ONLY JSON array.
+Respond ONLY with raw JSON array (no markdown, no code blocks):
 """
         raw = self.llm.generate(prompt, system, max_tokens=1500)
-        try:
-            import json
-            start = raw.find("[")
-            end = raw.rfind("]")
-            if start != -1 and end != -1:
-                outline = json.loads(raw[start:end+1])
-            else:
-                outline = json.loads(raw.strip().strip("`").replace("json", "").strip())
-            if not isinstance(outline, list):
-                raise ValueError
-        except Exception:
+        data = self.llm.extract_json(raw)
+        if data and isinstance(data, list):
+            outline = data
+        else:
             outline = self.STANDARD_OUTLINE.copy()
             if disc:
                 outline.insert(3, f"{disc} Specific Considerations")
@@ -86,7 +75,6 @@ Output ONLY JSON array.
         state.add_log(self.name, "Build Outline", f"Outline created with {len(outline)} sections", str(outline))
 
     def _draft_sections(self, state: ResearchState, disc: str, method: str):
-        """v5: Draft each section independently to avoid context collapse."""
         cits_str = ""
         for i, p in enumerate(state.extracted_papers[:25]):
             year = p.published_date[:4] if p.published_date else "Recent"
@@ -101,7 +89,6 @@ Output ONLY JSON array.
         if state.uploaded_files_content:
             pool_instructions = f"\nCRITICAL: User uploaded documents. Action: '{state.pool_action}'. Integrate their arguments.\n"
 
-        # Expert feedback for revision rounds
         expert_feedback = ""
         if state.expert_reviews:
             expert_feedback = "\nExpert Feedback to Address:\n" + "\n".join(
@@ -109,7 +96,6 @@ Output ONLY JSON array.
                 for e in state.expert_reviews
             )
 
-        # Peer review feedback for revision
         peer_feedback = ""
         if state.peer_reviews:
             peer_feedback = "\nPeer Review Issues to Address:\n" + "\n".join(
@@ -121,48 +107,60 @@ Output ONLY JSON array.
         state.sections = {}
 
         for idx, section in enumerate(state.outline):
-            state.add_log(self.name, f"Draft Section {idx+1}/{len(state.outline)}", f"Writing: {section}")
+            content = None
+            attempts = 0
+            max_attempts = 2
 
-            system = (
-                "You are an elite academic writer. Produce publication-ready prose. "
-                "Cite prior work naturally. Use precise terminology. Avoid filler. "
-                "Write ONLY the requested section."
-            )
+            while (content is None or len(content) < self.MIN_SECTION_LENGTH) and attempts < max_attempts:
+                attempts += 1
+                state.add_log(self.name, f"Draft Section {idx+1}/{len(state.outline)}", f"Writing: {section} (attempt {attempts})")
 
-            # Build section-specific prompt with limited context
-            prompt = self._build_section_prompt(
-                title=state.topic,
-                section=section,
-                section_index=idx,
-                total_sections=len(state.outline),
-                previous_summary=previous_text[-2500:],  # keep last ~2500 chars as context
-                citations=cits_str,
-                literature_summary=state.literature_summary[:2000],
-                gap=state.identified_gaps[0].title if state.identified_gaps else "None",
-                hypothesis=state.research_questions[0].hypothesis if state.research_questions else "None",
-                simulation=sim_summary,
-                pool=pool_instructions,
-                expert_feedback=expert_feedback,
-                peer_feedback=peer_feedback,
-                disc=disc,
-                method=method,
-                target_deliverable=state.target_deliverable,
-            )
+                system = (
+                    "You are an elite academic writer. Produce publication-ready prose. "
+                    "Cite prior work naturally. Use precise terminology. Avoid filler. "
+                    "Write ONLY the requested section."
+                )
 
-            content = self.llm.generate(prompt, system, max_tokens=3000)
+                prompt = self._build_section_prompt(
+                    title=state.topic,
+                    section=section,
+                    section_index=idx,
+                    total_sections=len(state.outline),
+                    previous_summary=previous_text[-2500:],
+                    citations=cits_str,
+                    literature_summary=state.literature_summary[:2000],
+                    gap=state.identified_gaps[0].title if state.identified_gaps else "None",
+                    hypothesis=state.research_questions[0].hypothesis if state.research_questions else "None",
+                    simulation=sim_summary,
+                    pool=pool_instructions,
+                    expert_feedback=expert_feedback,
+                    peer_feedback=peer_feedback,
+                    disc=disc,
+                    method=method,
+                    target_deliverable=state.target_deliverable,
+                )
+
+                content = self.llm.generate(prompt, system, max_tokens=3000)
+                quality = self.llm.validate_quality(content, min_length=self.MIN_SECTION_LENGTH)
+                if not quality["has_content"]:
+                    state.add_log(self.name, f"Draft Section {idx+1}/{len(state.outline)}", f"WARNING: Section too short ({len(content)} chars). Retrying...", status="warning")
+                    content = None
+
+            if content is None or len(content) < self.MIN_SECTION_LENGTH:
+                content = f"\n\n*[Section '{section}' could not be generated due to LLM limitations. Please use a more powerful model or increase context window.]*\n\n"
+                state.add_log(self.name, f"Draft Section {idx+1}/{len(state.outline)}", f"FAILED: Section '{section}' could not be generated.", status="error")
+
             state.sections[section] = content
             previous_text += f"\n\n## {section}\n\n{content}\n"
 
             state.progress_percentage = 50 + int((idx + 1) / len(state.outline) * 45)
-            state.add_log(self.name, f"Draft Section {idx+1}/{len(state.outline)}", f"Completed: {section}", status="completed")
+            state.add_log(self.name, f"Draft Section {idx+1}/{len(state.outline)}", f"Completed: {section} ({len(content)} chars)", status="completed")
 
     def _build_section_prompt(self, title: str, section: str, section_index: int, total_sections: int,
                                previous_summary: str, citations: str, literature_summary: str,
                                gap: str, hypothesis: str, simulation: str, pool: str,
                                expert_feedback: str, peer_feedback: str, disc: str, method: str,
                                target_deliverable: str) -> str:
-        """Construct a focused prompt for a single section."""
-
         word_guide = {
             "Abstract": "200-400 words",
             "Conclusion": "300-500 words",
@@ -212,7 +210,6 @@ Rules:
         return "\n".join(parts)
 
     def revise_for_peer_review(self, state: ResearchState) -> str:
-        """v5: Revise compiled paper based on peer review feedback."""
         if not state.peer_reviews:
             return state.final_manuscript_md
 
@@ -220,13 +217,13 @@ Rules:
         must_address = []
         for r in state.peer_reviews:
             must_address.extend(r.specific_issues)
-        must_address = list(set(must_address))[:10]  # deduplicate and limit
+        must_address = list(set(must_address))[:10]
 
         if not must_address:
             return paper
 
         issues_text = "\n".join(f"- {issue}" for issue in must_address)
-        system = "You are an author revising a paper based on strict peer review feedback. Address every issue."
+        system = "You are an author revising a paper based on strict peer review feedback."
         prompt = f"""
 Revise the following paper based on critical peer review issues.
 
@@ -240,13 +237,11 @@ Produce the full revised paper in Markdown. Address every issue systematically.
 Preserve structure. Improve clarity, evidence, and rigor.
 """
         revised = self.llm.generate(prompt, system, max_tokens=4000)
-        # Re-parse sections
         self._update_sections_from_markdown(state, revised)
         state.final_manuscript_md = revised
         return revised
 
     def _update_sections_from_markdown(self, state: ResearchState, markdown: str):
-        """Re-parse sections after revision."""
         sections = {}
         current = None
         buffer = []

@@ -1,5 +1,4 @@
 # Autonomous Academic Research Agent v5 - Requirements
-# Run with: pip install -r requirements.txt
 
 streamlit>=1.35.0
 requests>=2.31.0
@@ -11,6 +10,8 @@ matplotlib>=3.8.0
 duckduckgo-search>=5.3.0
 beautifulsoup4>=4.12.0
 lxml>=5.2.0
-
-# v5 additions
 networkx>=3.2.1
+
+# v5: Cloud LLM providers (optional but recommended for reliable JSON output)
+openai>=1.35.0
+anthropic>=0.28.0

@@ -22,25 +22,35 @@ class GapAnalystAgent:
         if state.uploaded_files_content:
             pool_context = f"\nNote: Evaluate against uploaded Research Pool documents under action: '{state.pool_action}'.\n"
 
-        # 1. Identify Gaps via LLM
+        # 1. Identify Gaps via LLM with robust JSON
         prompt_gaps = f"""Act as "Prof"—a world-class interdisciplinary academic and journal editor.
 CORE PRINCIPLES: Accuracy before style. Evidence before opinion. Never use unnecessary words. Never invent facts, citations, or paper titles.
 
 TASK:
 Based strictly on the following literature synthesis for "{state.topic}" (Discipline: {disc}) and the verified paper titles list below, identify 2 to 3 genuine, unaddressed research gaps, contradictions, or methodological shortcomings.{pool_context}
-Output ONLY a valid JSON array of objects with keys: "gap_id", "title", "description", "significance", and "related_papers" (must contain exact titles selected from the Verified Paper Titles list below).
+
+Respond ONLY with raw JSON array (no markdown, no code blocks, no explanations):
+[
+  {{
+    "gap_id": "GAP-01",
+    "title": "...",
+    "description": "...",
+    "significance": "...",
+    "related_papers": ["exact paper title from list"]
+  }}
+]
 
 Verified Paper Titles:
 {json.dumps(titles_list, indent=2)}
 
 Literature Review Synthesis:
-{state.literature_summary}"""
+{state.literature_summary[:6000]}"""
 
-        raw_gaps = self.llm.generate(prompt=prompt_gaps, system_prompt="Act as Prof. Output clean JSON array representing genuine research gaps.", max_tokens=1500)
-        gaps = self._parse_gaps_json(raw_gaps)
+        raw_gaps = self.llm.generate(prompt_gaps, system_prompt="Act as Prof. Output clean JSON array.", max_tokens=1500)
+        gaps = self._parse_gaps(raw_gaps, state, titles_list)
         
         if not gaps:
-            state.add_log(self.name, "Research Gap Analysis", "LLM failed to output valid JSON for gaps. Using top scraped titles as reference.", status="error")
+            state.add_log(self.name, "Research Gap Analysis", "LLM failed to output valid gaps. Using fallback.", status="warning")
             gaps = [
                 ResearchGap(
                     gap_id="GAP-01",
@@ -54,23 +64,31 @@ Literature Review Synthesis:
         state.identified_gaps = gaps
         state.add_log(self.name, "Research Gap Analysis", f"Identified {len(gaps)} verified research gaps.", f"Top Gap: {gaps[0].title}")
 
-        # 2. Formulate Research Questions & Hypotheses via LLM
-        state.add_log(self.name, "Hypothesis Generation", f"Formulating testable hypotheses utilizing discipline methodology: {method.upper()}...")
-        
+        # 2. Formulate Research Questions & Hypotheses via robust JSON
         gaps_desc = "\n".join([f"- [{g.gap_id}] {g.title}: {g.description}" for g in gaps])
         prompt_rq = f"""Act as "Prof"—a world-class research methodologist and PhD supervisor.
-CORE PRINCIPLES: Accuracy before style. Evidence before opinion. Simplicity before complexity. Never invent facts.
+CORE PRINCIPLES: Accuracy before style. Evidence before opinion. Never invent facts.
 
 TASK:
-For the following verified research gaps in "{state.topic}", formulate 1 to 2 precise research questions and testable scientific hypotheses tailored for deliverable type: "{state.target_deliverable}".
-The recommended methodology for this discipline is "{method}". Do NOT force computational Python simulation if this is a qualitative, humanities, social science, or clinical review topic.
-Output ONLY a valid JSON array of objects with keys: "question_id", "question", "hypothesis", "methodology_type" (must be '{method}' or 'hybrid'), "proposed_investigation".
+For the following verified research gaps in "{state.topic}", formulate 1 to 2 precise research questions and testable scientific hypotheses.
+The recommended methodology for this discipline is "{method}". 
+
+Respond ONLY with raw JSON array (no markdown, no code blocks, no explanations):
+[
+  {{
+    "question_id": "RQ-01",
+    "question": "...",
+    "hypothesis": "...",
+    "methodology_type": "{method}",
+    "proposed_investigation": "..."
+  }}
+]
 
 Identified Gaps:
 {gaps_desc}"""
 
-        raw_rqs = self.llm.generate(prompt=prompt_rq, system_prompt="Act as Prof. Output clean JSON array.", max_tokens=1500)
-        rqs = self._parse_rqs_json(raw_rqs)
+        raw_rqs = self.llm.generate(prompt_rq, system_prompt="Act as Prof. Output clean JSON array.", max_tokens=1500)
+        rqs = self._parse_rqs(raw_rqs, state, method)
         
         if not rqs:
             rqs = [
@@ -88,24 +106,37 @@ Identified Gaps:
         state.add_log(self.name, "Hypothesis Generation", "Formulated testable hypotheses successfully.", status="completed")
         return state
 
-    def _parse_gaps_json(self, raw_text: str) -> List[ResearchGap]:
-        try:
-            match = re.search(r'\[.*\]', raw_text, re.DOTALL)
-            if match:
-                data = json.loads(match.group(0))
-                return [ResearchGap(**item) for item in data]
-            data = json.loads(raw_text)
-            return [ResearchGap(**item) for item in data]
-        except Exception:
+    def _parse_gaps(self, raw_text: str, state: ResearchState, fallback_titles: List[str]) -> List[ResearchGap]:
+        data = self.llm.extract_json_list(raw_text)
+        if not data:
             return []
+        result = []
+        for item in data:
+            if isinstance(item, dict):
+                related = item.get("related_papers", [])
+                if not related and fallback_titles:
+                    related = fallback_titles[:2]
+                result.append(ResearchGap(
+                    gap_id=item.get("gap_id", "GAP-01"),
+                    title=item.get("title", "Untitled Gap"),
+                    description=item.get("description", ""),
+                    significance=item.get("significance", ""),
+                    related_papers=related if isinstance(related, list) else [related],
+                ))
+        return result
 
-    def _parse_rqs_json(self, raw_text: str) -> List[ResearchQuestion]:
-        try:
-            match = re.search(r'\[.*\]', raw_text, re.DOTALL)
-            if match:
-                data = json.loads(match.group(0))
-                return [ResearchQuestion(**item) for item in data]
-            data = json.loads(raw_text)
-            return [ResearchQuestion(**item) for item in data]
-        except Exception:
+    def _parse_rqs(self, raw_text: str, state: ResearchState, default_method: str) -> List[ResearchQuestion]:
+        data = self.llm.extract_json_list(raw_text)
+        if not data:
             return []
+        result = []
+        for item in data:
+            if isinstance(item, dict):
+                result.append(ResearchQuestion(
+                    question_id=item.get("question_id", "RQ-01"),
+                    question=item.get("question", ""),
+                    hypothesis=item.get("hypothesis", ""),
+                    methodology_type=item.get("methodology_type", default_method),
+                    proposed_investigation=item.get("proposed_investigation", ""),
+                ))
+        return result

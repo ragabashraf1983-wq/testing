@@ -17,26 +17,22 @@ from research_engine.project_history import ProjectHistory
 
 class ResearchOrchestrator:
     """
-    Core engine managing the autonomous multi-agent research workflow under 'Prof' academic standards.
-    v5: Adds Expert Council, Peer Review Board, Conflict Resolution, Experiment Agent,
-        Chunked Drafting, Graph Tracking, Audit Logging, and Project History.
+    Core engine managing the autonomous multi-agent research workflow.
+    v5: Robust LLM failure detection, early abort, and quality validation.
     """
-    def __init__(self, model_name: str = "ollama/llama3", base_url: str = "http://localhost:11434", temperature: float = 0.2):
-        self.llm_client = LocalLLMClient(model_name=model_name, base_url=base_url, temperature=temperature)
+    def __init__(self, model_name: str = "ollama/llama3", base_url: str = "http://localhost:11434", temperature: float = 0.2, api_key: Optional[str] = None):
+        self.llm_client = LocalLLMClient(model_name=model_name, base_url=base_url, temperature=temperature, api_key=api_key)
 
-        # v4 agents
         self.scout = LiteratureScoutAgent(self.llm_client)
         self.analyst = GapAnalystAgent(self.llm_client)
         self.methodologist = MethodologistAgent(self.llm_client)
         self.author = AcademicAuthorAgent(self.llm_client)
 
-        # v5 agents
         self.expert_council = DomainExpertCouncil(self.llm_client)
         self.peer_review_board = PeerReviewBoard(self.llm_client)
         self.conflict_resolver = ConflictResolutionAgent(self.llm_client)
         self.experiment_agent = ExperimentAgent(self.llm_client)
 
-        # v5 infrastructure
         self.tracker = GraphTracker("orchestrator")
         self.audit = AuditLogger()
         self.history = ProjectHistory()
@@ -50,7 +46,7 @@ class ResearchOrchestrator:
         allow_code_execution: bool = True,
         progress_callback: Optional[Callable[[ResearchState], None]] = None
     ) -> ResearchState:
-        """v5: Full pipeline with Expert Council, Peer Review, Experiments, and Audit."""
+        """v5: Full pipeline with robust LLM failure detection and early abort."""
         state = ResearchState(
             topic=topic,
             target_deliverable=target_deliverable,
@@ -67,35 +63,58 @@ class ResearchOrchestrator:
             progress_callback(state)
         time.sleep(0.2)
 
-        # Stage 1: Literature Scout (v4)
+        # Stage 1: Literature Scout
         self._run_literature(state, progress_callback)
         self._save_state(state)
 
-        # Stage 2: Gap Analysis (v4)
+        # Check LLM quality after literature stage
+        if self._llm_quality_too_low(state):
+            state.add_log("System Orchestrator", "LLM QUALITY WARNING", "LLM producing weak/empty responses. Recommend switching to a stronger model (GPT-4o, Claude-3.5, llama3.1:70b, or similar).", status="warning")
+            state.status = "llm_quality_warning"
+            self._save_state(state)
+            return state
+
+        # Stage 2: Gap Analysis
         self._run_gap_analysis(state, progress_callback)
         self._save_state(state)
 
-        # Stage 3: Methodology (v4)
+        # Stage 3: Methodology
         self._run_methodology(state, progress_callback)
         self._save_state(state)
 
-        # v5 Stage 4: Expert Council Evaluation
-        self._run_expert_council(state, progress_callback)
+        # Stage 4: Expert Council Evaluation
+        expert_result = self._run_expert_council(state, progress_callback)
         self._save_state(state)
 
-        # v5 Stage 5: Chunked Drafting
+        if expert_result.get("llm_failure_detected"):
+            state.add_log("System Orchestrator", "Expert Council Warning", "All experts returned identical fallback scores. LLM is too weak for structured evaluation. Continuing with degraded quality.", status="warning")
+
+        # Stage 5: Chunked Drafting
         self._run_chunked_drafting(state, progress_callback)
         self._save_state(state)
 
-        # v5 Stage 6: Peer Review Board
-        self._run_peer_review(state, progress_callback)
+        # Check if sections are actually populated
+        if not state.sections or all(len(s) < 200 for s in state.sections.values()):
+            state.add_log("System Orchestrator", "DRAFTING FAILED", "All sections are empty or too short. LLM is not producing content. Aborting peer review.", status="error")
+            state.status = "drafting_failed"
+            self._run_final_export(state, progress_callback)
+            self._save_state(state)
+            return state
+
+        # Stage 6: Peer Review Board
+        review_result = self._run_peer_review(state, progress_callback)
         self._save_state(state)
 
-        # v5 Stage 7: Experiment Assessment
+        if review_result and review_result.get("llm_failure_detected"):
+            state.add_log("System Orchestrator", "Peer Review Warning", "All reviewers returned identical fallback scores. LLM cannot perform structured peer review. Skipping revision loops.", status="warning")
+            # Don't loop infinitely with fake scores
+            state.draft_iteration = state.max_draft_iterations
+
+        # Stage 7: Experiment Assessment
         self._run_experiment_assessment(state, progress_callback)
         self._save_state(state)
 
-        # v5 Stage 8: Final Edit & Export
+        # Stage 8: Final Edit & Export
         self._run_final_export(state, progress_callback)
         self._save_state(state)
 
@@ -107,6 +126,15 @@ class ResearchOrchestrator:
             progress_callback(state)
         return state
 
+    def _llm_quality_too_low(self, state: ResearchState) -> bool:
+        """Detect if the LLM is producing garbage/empty responses."""
+        if self.llm_client.quality_score < 0.3:
+            return True
+        # Check if literature summary is empty or too short
+        if not state.literature_summary or len(state.literature_summary) < 200:
+            return True
+        return False
+
     def _run_literature(self, state: ResearchState, progress_callback: Optional[Callable] = None):
         state.add_log("System Orchestrator", "Stage 1", "Literature Retrieval across 4 databases...")
         state = self.scout.execute(state)
@@ -114,7 +142,6 @@ class ResearchOrchestrator:
             progress_callback(state)
         time.sleep(0.2)
 
-        # Pre-generate methodology classification
         disc, rec_method, _ = DomainIntelligenceEngine.classify_domain_and_methodology(state.topic)
         if not state.research_questions:
             from research_engine.models import ResearchQuestion
@@ -142,10 +169,9 @@ class ResearchOrchestrator:
             progress_callback(state)
         time.sleep(0.2)
 
-    def _run_expert_council(self, state: ResearchState, progress_callback: Optional[Callable] = None):
+    def _run_expert_council(self, state: ResearchState, progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
         state.add_log("System Orchestrator", "Stage 4", "Expert Council Evaluation (7 specialists)...")
 
-        # Build content to evaluate: outline + methodology + literature summary
         content = f"""
 Topic: {state.topic}
 Literature Summary: {state.literature_summary[:2000]}
@@ -155,7 +181,6 @@ Methodology: {state.research_questions[0].methodology_type if state.research_que
 """
         eval_result = self.expert_council.evaluate(content, context="Pre-draft research direction", state=state)
 
-        # Store expert reviews in state
         from research_engine.models import ExpertReviewEntry
         for r in eval_result["reviews"]:
             state.expert_reviews.append(ExpertReviewEntry(
@@ -174,8 +199,7 @@ Methodology: {state.research_questions[0].methodology_type if state.research_que
             progress_callback(state)
         time.sleep(0.2)
 
-        # Conflict resolution if consensus too low
-        if eval_result["consensus_level"] < state.expert_consensus_threshold:
+        if eval_result["consensus_level"] < state.expert_consensus_threshold and not eval_result.get("llm_failure_detected"):
             state.add_log("System Orchestrator", "Stage 4b", "Expert consensus low — initiating structured debate...")
             debate = self.conflict_resolver.debate(
                 content=content,
@@ -199,6 +223,8 @@ Methodology: {state.research_questions[0].methodology_type if state.research_que
             if progress_callback:
                 progress_callback(state)
 
+        return eval_result
+
     def _run_chunked_drafting(self, state: ResearchState, progress_callback: Optional[Callable] = None):
         state.add_log("System Orchestrator", "Stage 5", "Chunked Section Drafting (prevents context collapse)...")
         state = self.author.execute(state)
@@ -206,17 +232,19 @@ Methodology: {state.research_questions[0].methodology_type if state.research_que
             progress_callback(state)
         time.sleep(0.2)
 
-    def _run_peer_review(self, state: ResearchState, progress_callback: Optional[Callable] = None):
+    def _run_peer_review(self, state: ResearchState, progress_callback: Optional[Callable] = None) -> Optional[Dict[str, Any]]:
         state.add_log("System Orchestrator", "Stage 6", "Peer Review Board (Editor + 5 reviewers)...")
 
         paper_text = state.final_manuscript_md
+        last_review = None
+
         for round_num in range(1, state.max_peer_review_rounds + 1):
             state.peer_review_round = round_num
             state.add_log("System Orchestrator", f"Peer Review Round {round_num}", f"Submitting to review board...")
 
             review_result = self.peer_review_board.review(paper_text, round_num, state)
+            last_review = review_result
 
-            # Store peer reviews
             from research_engine.models import PeerReviewEntry
             for d in review_result["reviewer_decisions"]:
                 state.peer_reviews.append(PeerReviewEntry(
@@ -231,11 +259,15 @@ Methodology: {state.research_questions[0].methodology_type if state.research_que
             if progress_callback:
                 progress_callback(state)
 
+            # If LLM failure detected, don't waste time on fake loops
+            if review_result.get("llm_failure_detected"):
+                state.add_log("System Orchestrator", "Peer Review Abort", "LLM producing identical fallback scores. Skipping revision loops.", status="warning")
+                break
+
             if review_result["final_verdict"] in ("ACCEPT", "MINOR_REVISION"):
                 state.add_log("System Orchestrator", f"Peer Review Round {round_num}", f"Verdict: {review_result['final_verdict']}")
                 break
 
-            # Revision loop
             state.add_log("System Orchestrator", f"Revision Round {round_num}", f"Verdict: {review_result['final_verdict']} — revising...")
             state.draft_iteration += 1
             if state.draft_iteration > state.max_draft_iterations:
@@ -247,6 +279,8 @@ Methodology: {state.research_questions[0].methodology_type if state.research_que
             if progress_callback:
                 progress_callback(state)
             time.sleep(0.2)
+
+        return last_review
 
     def _run_experiment_assessment(self, state: ResearchState, progress_callback: Optional[Callable] = None):
         state.add_log("System Orchestrator", "Stage 7", "Experiment Assessment...")
@@ -270,7 +304,8 @@ Methodology: {state.research_questions[0].methodology_type if state.research_que
         system = "You are a senior copy editor for a Q1 journal. Fix grammar, improve flow, ensure consistent terminology, and format citations properly."
         prompt = f"Edit and polish the following paper for final submission:\n\n{state.final_manuscript_md[:12000]}"
         edited = self.llm_client.generate(prompt, system, max_tokens=4000)
-        state.final_manuscript_md = edited
+        if edited and not edited.startswith("[LLM"):
+            state.final_manuscript_md = edited
 
         # Save paper
         paper_path = self.author.save_paper(state)
@@ -292,7 +327,6 @@ Methodology: {state.research_questions[0].methodology_type if state.research_que
             progress_callback(state)
 
     def _save_state(self, state: ResearchState):
-        """Persist state to project history and audit log."""
         self.history.save_project(
             project_id=state.project_id,
             title=state.topic,
@@ -323,6 +357,7 @@ Methodology: {state.research_questions[0].methodology_type if state.research_que
             f"Stage: {state.current_stage}",
             f"Draft Iteration: {state.draft_iteration}",
             f"Peer Review Round: {state.peer_review_round}",
+            f"LLM Quality Score: {self.llm_client.quality_score:.2f}",
             "\n=== OUTLINE ===\n",
             "\n".join(f"{i+1}. {s}" for i, s in enumerate(state.outline)),
             "\n=== EXPERT REVIEWS ===\n",
@@ -337,7 +372,7 @@ Methodology: {state.research_questions[0].methodology_type if state.research_que
             parts.append(f"- Round {c.round}: {c.topic} -> {c.resolution}")
         parts.append("\n=== EXPERIMENTS ===\n")
         for exp in state.experiments:
-            parts.append(f"- {exp.experiment_id}: {exp.title} [{exp.status}]")
+            parts.append(f"- {exp.get('experiment_id', 'N/A')}: {exp.get('title', 'N/A')} [{exp.get('status', 'N/A')}]")
         return "\n".join(parts)
 
     # --- v4 Backward Compatible Methods ---
@@ -351,7 +386,6 @@ Methodology: {state.research_questions[0].methodology_type if state.research_que
         allow_code_execution: bool = True,
         progress_callback: Optional[Callable[[ResearchState], None]] = None
     ) -> ResearchState:
-        """Executes Stage 1: Live 4-database literature retrieval and analyzing uploaded pool documents."""
         state = ResearchState(
             topic=topic,
             target_deliverable=target_deliverable,
@@ -400,7 +434,6 @@ Methodology: {state.research_questions[0].methodology_type if state.research_que
         user_emphasis: Optional[str] = None,
         progress_callback: Optional[Callable[[ResearchState], None]] = None
     ) -> ResearchState:
-        """Resumes workflow from consultation: executes Stage 2 (Gaps), Stage 3 (Methodology), and Stage 4 (Author)."""
         state.add_log("System Orchestrator", "Strategy Confirmed", "User confirmed research direction. Resuming deep analytical workflow...")
         if progress_callback:
             progress_callback(state)
@@ -419,19 +452,16 @@ Methodology: {state.research_questions[0].methodology_type if state.research_que
             state.research_questions[0].proposed_investigation += f" (User Focus Emphasis: {user_emphasis})"
             state.add_log("System Orchestrator", "Strategy Confirmed", f"Added custom research emphasis: '{user_emphasis}'")
 
-        # Stage 2: Gap Analyst
         state = self.analyst.execute(state)
         if progress_callback:
             progress_callback(state)
         time.sleep(0.2)
 
-        # Stage 3: Lead Methodologist
         state = self.methodologist.execute(state)
         if progress_callback:
             progress_callback(state)
         time.sleep(0.2)
 
-        # Stage 4: Academic Author (v5 chunked)
         state = self.author.execute(state)
         if progress_callback:
             progress_callback(state)
