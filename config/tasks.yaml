@@ -1,8 +1,9 @@
-# Autonomous Academic Research Agent - Task Definitions (CrewAI Style)
+# Autonomous Academic Research Agent v5 - Task Definitions
 
+# v4 Core Tasks
 retrieve_literature_task:
   description: >
-    Conduct a systematic search across academic databases (ArXiv, OpenAlex) for the topic: '{topic}'.
+    Conduct a systematic search across academic databases (ArXiv, OpenAlex, Semantic Scholar, Crossref) for the topic: '{topic}'.
     Extract at least 3-5 highly relevant papers. For each paper, record title, authors, publication date,
     abstract, citation count, and methodological approach. Synthesize these into a comprehensive literature review.
   expected_output: >
@@ -36,8 +37,67 @@ draft_manuscript_task:
     Synthesize all accumulated research artifacts (literature review, identified gaps, research questions,
     hypotheses, executed Python simulation code, statistical results, and charts) into a complete, formal,
     publication-ready academic manuscript in clean Markdown (.md).
+    v5: Draft section-by-section to prevent local LLM context collapse and ensure the full paper is generated.
   expected_output: >
     A full academic paper formatted in Markdown containing: Title, Author Block, Abstract, Introduction,
     Related Work, Methodology, Results & Empirical Analysis (incorporating tabular simulation data),
     Discussion, Conclusion, and References.
   agent: academic_author
+
+# v5 Expert Council Task
+evaluate_with_expert_council_task:
+  description: >
+    Submit the research outline, literature synthesis, and hypothesis to the Domain Expert Council.
+    Each of the 7 specialists (Linguist, Mathematician, Physicist, Statistician, Methodologist, Logistician, Epistemologist)
+    evaluates independently, scores the work, and may raise dissent if they identify fundamental flaws.
+  expected_output: >
+    A structured evaluation report with per-expert scores, criticisms, suggestions, and consensus level.
+    If consensus is below threshold, trigger structured debate rounds.
+  agent: domain_expert_council
+
+# v5 Conflict Resolution Task
+resolve_expert_conflicts_task:
+  description: >
+    When Expert Council consensus is low, orchestrate structured adversarial debate rounds among dissenting experts.
+    Produce a binding resolution with specific changes required, and track winning/losing positions.
+  expected_output: >
+    A debate resolution document with binding decisions, required changes, and arbitration reasoning.
+  agent: conflict_resolution
+
+# v5 Peer Review Task
+peer_review_task:
+  description: >
+    Submit the drafted manuscript to the Peer Review Board (Editor + 5 specialist reviewers).
+    Enforce Q1/Q2 journal standards. Reviewers issue ACCEPT, MINOR_REVISION, MAJOR_REVISION, or REJECT verdicts.
+    If standards are not met, loop back to revision (up to 5 iterations).
+  expected_output: >
+    A peer review report with editorial letter, reviewer scores, and specific issues to address.
+  agent: peer_review_board
+
+# v5 Experiment Task
+assess_and_design_experiments_task:
+  description: >
+    Assess whether the research topic requires real-world empirical validation (lab, field, simulation, survey).
+    If needed, design a rigorous experiment protocol, notify the user via file/notification, and pause the pipeline.
+    When user returns results, integrate them into the Results and Discussion sections.
+  expected_output: >
+    An experiment design document with variables, materials, procedure, safety notes, and status (PENDING_USER or COMPLETED).
+  agent: experiment_agent
+
+# v5 Graph Export Task
+export_process_graph_task:
+  description: >
+    Export the real-time process graph of all agent interactions as an interactive D3.js HTML file.
+    The user can open this in a browser to see which agent is running and the full workflow network.
+  expected_output: >
+    An interactive HTML file with a force-directed graph showing agents, states, and active nodes.
+  agent: visualization
+
+# v5 Audit Export Task
+export_audit_log_task:
+  description: >
+    Export a complete timestamped Markdown audit log capturing every agent action, conflict, resolution,
+    experiment notification, and state transition for the project.
+  expected_output: >
+    A Markdown file with full audit trail, severity levels, and structured metadata.
+  agent: audit_logger

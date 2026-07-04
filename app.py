@@ -5,11 +5,13 @@ import pandas as pd
 from research_engine.orchestrator import ResearchOrchestrator
 from research_engine.models import ResearchState
 from research_engine.domain_engine import DomainIntelligenceEngine
+from research_engine.project_history import ProjectHistory
+from research_engine.audit_logger import AuditLogger
 
 
 # Configure Streamlit Page for Native Apple Dark Mode Aesthetic
 st.set_page_config(
-    page_title="Research Agent — Apple Dark OS",
+    page_title="Research Agent v5 — Apple Dark OS",
     page_icon="🍏",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -123,6 +125,22 @@ st.markdown("""
         box-shadow: 0 10px 30px rgba(48, 209, 88, 0.12);
     }
 
+    .expert-card {
+        background: linear-gradient(145deg, #1C1C1E 0%, #1A1A2E 100%);
+        border: 1px solid rgba(52, 152, 219, 0.3);
+        border-radius: 16px;
+        padding: 1.2rem;
+        margin-bottom: 1rem;
+    }
+
+    .peer-card {
+        background: linear-gradient(145deg, #1C1C1E 0%, #2C1A2E 100%);
+        border: 1px solid rgba(142, 68, 173, 0.3);
+        border-radius: 16px;
+        padding: 1.2rem;
+        margin-bottom: 1rem;
+    }
+
     .stTextInput input, .stSelectbox div[data-baseweb="select"], .stTextArea textarea {
         background-color: #1C1C1E !important;
         color: #F5F5F7 !important;
@@ -210,11 +228,30 @@ def init_session_state():
         st.session_state.workflow_stage = "idle" # 'idle', 'retrieving', 'consultation', 'executing', 'completed'
     if "selected_topic" not in st.session_state:
         st.session_state.selected_topic = "Risk Mitigation Framework for Emerging Maritime Operations"
+    if "v5_mode" not in st.session_state:
+        st.session_state.v5_mode = True
 
 
 def render_sidebar():
     st.sidebar.markdown("## 🍏 System Settings")
     st.sidebar.markdown("<span style='color: #8E8E93; font-size: 0.85rem;'>Apple Dark OS • 'Prof' Academic Standards</span>", unsafe_allow_html=True)
+    st.sidebar.markdown("---")
+    
+    # v5 Mode Toggle
+    v5_mode = st.sidebar.toggle("🚀 v5 Enhanced Mode", value=st.session_state.v5_mode, help="Enables Expert Council, Peer Review Board, Chunked Drafting, Experiments, Graph Tracking, and Audit Logs.")
+    st.session_state.v5_mode = v5_mode
+    if v5_mode:
+        st.sidebar.markdown("""
+        <div style="background-color: #1C1C1E; border: 1px solid rgba(10, 132, 255, 0.4); border-radius: 10px; padding: 0.8rem; font-size: 0.82rem; color: #0A84FF; line-height: 1.4;">
+            <strong>v5 Features Active:</strong><br>
+            • Expert Council (7 specialists)<br>
+            • Peer Review Board (Editor + 5)<br>
+            • Chunked Drafting<br>
+            • Experiment Design<br>
+            • Process Graph & Audit Logs
+        </div>
+        """, unsafe_allow_html=True)
+    
     st.sidebar.markdown("---")
     
     st.sidebar.markdown("### 🎯 Target Deliverable & Size")
@@ -298,17 +335,79 @@ def render_sidebar():
         st.session_state.selected_topic = "Quantum Computing Applications in Protein Folding"
         st.session_state.workflow_stage = "idle"
 
-    return model_choice, base_url, temperature, deliverable_choice, allow_code
+    # Project History quick access
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📚 Project History")
+    try:
+        ph = ProjectHistory()
+        projects = ph.list_projects()
+        if projects:
+            for p in projects[:5]:
+                st.sidebar.markdown(f"<span style='font-size:0.8rem; color:#8E8E93;'>• {p['title'][:30]} ({p['status']})</span>", unsafe_allow_html=True)
+        else:
+            st.sidebar.markdown("<span style='font-size:0.8rem; color:#636366;'>No saved projects yet.</span>", unsafe_allow_html=True)
+    except Exception:
+        pass
+
+    return model_choice, base_url, temperature, deliverable_choice, allow_code, v5_mode
 
 
 def render_header():
-    st.markdown('<div class="apple-title">Autonomous Research Agent</div>', unsafe_allow_html=True)
-    st.markdown('<div class="apple-subtitle">Powered by Role-Based CrewAI • 4 Free Academic Databases • 100% Real Scraping • "Prof" Academic Persona</div>', unsafe_allow_html=True)
+    st.markdown('<div class="apple-title">Autonomous Research Agent v5</div>', unsafe_allow_html=True)
+    st.markdown('<div class="apple-subtitle">Powered by Role-Based CrewAI • 4 Free Academic Databases • 100% Real Scraping • "Prof" Academic Persona • Expert Council & Peer Review Board</div>', unsafe_allow_html=True)
+
+
+def _build_ui_callback(timer_box, progress_bar, status_box, log_box, max_pct=100):
+    """Factory for UI update callback used in both v4 and v5 flows."""
+    def update_ui_callback(current_state: ResearchState):
+        elapsed_sec = time.time() - current_state.start_time
+        elapsed_str = f"{int(elapsed_sec) // 60:02d}:{int(elapsed_sec) % 60:02d}"
+        if current_state.progress_percentage > 5 and current_state.progress_percentage < max_pct:
+            total_est = (elapsed_sec / (current_state.progress_percentage / 100.0))
+            rem = max(0, int(total_est - elapsed_sec))
+            eta_str = f"~{rem // 60:02d}:{rem % 60:02d}"
+        else:
+            eta_str = "Calculating..."
+
+        timer_box.markdown(f"""
+        <div class="apple-timer-banner">
+            <div style="font-size: 0.88rem; color: #8E8E93; font-weight: 600; letter-spacing: 0.05em;">⏱️ ELAPSED TIME &amp; ETA TRACKER</div>
+            <div style="font-size: 2.2rem; font-weight: 700; color: #30D158; font-family: 'SF Mono', monospace; margin: 4px 0;">
+                {elapsed_str} <span style="font-size: 1.2rem; color: #8E8E93; font-weight: 400;">| EST. REMAINING: {eta_str}</span>
+            </div>
+            <div style="font-size: 0.95rem; color: #0A84FF; font-weight: 500;">● Deep Real Scraping &amp; Analytical Reasoning in Progress...</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        progress_bar.progress(
+            min(current_state.progress_percentage, max_pct),
+            text=f"Current Workflow: {current_state.current_stage} ({current_state.progress_percentage}%)"
+        )
+        
+        latest_log = current_state.logs[-1] if current_state.logs else None
+        if latest_log:
+            status_html = f"""
+            <div class="status-card-apple">
+                <span style="color: #0A84FF; font-weight: 600; font-size: 0.9rem;">● ACTIVE AGENT ROLE</span><br>
+                <strong style="font-size: 1.2rem; color: #FFFFFF;">{latest_log.agent_name}</strong><br>
+                <span style="color: #F5F5F7; font-size: 1rem;">Action: {latest_log.action}</span><br>
+                <span style="color: #8E8E93; font-size: 0.88rem;">Details: {latest_log.details or 'Processing task...'}</span>
+            </div>
+            """
+            status_box.markdown(status_html, unsafe_allow_html=True)
+        
+        logs_data = []
+        for log in reversed(current_state.logs[-12:]):
+            status_icon = "🟢" if log.status == "completed" else "🟡" if log.status == "running" else "🔴"
+            logs_data.append(f"<span style='color:#636366;'>[{log.timestamp}]</span> {status_icon} <strong style='color:#0A84FF;'>[{log.agent_name}]</strong> ➔ <span style='color:#FFFFFF;'>{log.stage}:</span> {log.action}")
+        
+        log_box.markdown(f'<div class="apple-terminal">{"<br>".join(logs_data)}</div>', unsafe_allow_html=True)
+    return update_ui_callback
 
 
 def main():
     init_session_state()
-    model_choice, base_url, temperature, deliverable_choice, allow_code = render_sidebar()
+    model_choice, base_url, temperature, deliverable_choice, allow_code, v5_mode = render_sidebar()
     render_header()
 
     # Topic Search Bar
@@ -388,49 +487,7 @@ def main():
         status_box = st.empty()
         log_box = st.empty()
         
-        def update_ui_callback(current_state: ResearchState):
-            elapsed_sec = time.time() - current_state.start_time
-            elapsed_str = f"{int(elapsed_sec) // 60:02d}:{int(elapsed_sec) % 60:02d}"
-            if current_state.progress_percentage > 5 and current_state.progress_percentage < 100:
-                total_est = (elapsed_sec / (current_state.progress_percentage / 100.0))
-                rem = max(0, int(total_est - elapsed_sec))
-                eta_str = f"~{rem // 60:02d}:{rem % 60:02d}"
-            else:
-                eta_str = "Calculating..."
-
-            timer_box.markdown(f"""
-            <div class="apple-timer-banner">
-                <div style="font-size: 0.88rem; color: #8E8E93; font-weight: 600; letter-spacing: 0.05em;">⏱️ ELAPSED TIME &amp; ETA TRACKER</div>
-                <div style="font-size: 2.2rem; font-weight: 700; color: #30D158; font-family: 'SF Mono', monospace; margin: 4px 0;">
-                    {elapsed_str} <span style="font-size: 1.2rem; color: #8E8E93; font-weight: 400;">| EST. REMAINING: {eta_str}</span>
-                </div>
-                <div style="font-size: 0.95rem; color: #0A84FF; font-weight: 500;">● Deep Real Scraping &amp; Analytical Reasoning in Progress...</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            progress_bar.progress(
-                current_state.progress_percentage,
-                text=f"Current Workflow: {current_state.current_stage} ({current_state.progress_percentage}%)"
-            )
-            
-            latest_log = current_state.logs[-1] if current_state.logs else None
-            if latest_log:
-                status_html = f"""
-                <div class="status-card-apple">
-                    <span style="color: #0A84FF; font-weight: 600; font-size: 0.9rem;">● ACTIVE AGENT ROLE</span><br>
-                    <strong style="font-size: 1.2rem; color: #FFFFFF;">{latest_log.agent_name}</strong><br>
-                    <span style="color: #F5F5F7; font-size: 1rem;">Action: {latest_log.action}</span><br>
-                    <span style="color: #8E8E93; font-size: 0.88rem;">Details: {latest_log.details or 'Processing task...'}</span>
-                </div>
-                """
-                status_box.markdown(status_html, unsafe_allow_html=True)
-            
-            logs_data = []
-            for log in reversed(current_state.logs[-10:]):
-                status_icon = "🟢" if log.status == "completed" else "🟡" if log.status == "running" else "🔴"
-                logs_data.append(f"<span style='color:#636366;'>[{log.timestamp}]</span> {status_icon} <strong style='color:#0A84FF;'>[{log.agent_name}]</strong> ➔ <span style='color:#FFFFFF;'>{log.stage}:</span> {log.action}")
-            
-            log_box.markdown(f'<div class="apple-terminal">{"<br>".join(logs_data)}</div>', unsafe_allow_html=True)
+        update_ui_callback = _build_ui_callback(timer_box, progress_bar, status_box, log_box)
 
         with st.spinner("Scraping up to 60 publications across 4 databases and synthesizing literature under 'Prof' standards..."):
             orchestrator = ResearchOrchestrator(model_name=model_choice, base_url=base_url, temperature=temperature)
@@ -443,10 +500,40 @@ def main():
                 progress_callback=update_ui_callback
             )
             st.session_state.research_state = state
-            st.session_state.workflow_stage = "consultation"
+            if v5_mode:
+                st.session_state.workflow_stage = "executing_v5"
+            else:
+                st.session_state.workflow_stage = "consultation"
             st.rerun()
 
-    # STAGE 2: Interactive User Consultation & Alignment Checkpoint
+    # v5: Skip consultation and run full pipeline directly
+    if st.session_state.workflow_stage == "executing_v5" and st.session_state.research_state:
+        st.markdown("---")
+        st.markdown("### 🚀 v5 Full Pipeline: Expert Council • Peer Review • Chunked Drafting • Audit")
+        
+        timer_box = st.empty()
+        progress_bar = st.progress(25, text="Initializing v5 enhanced pipeline...")
+        status_box = st.empty()
+        log_box = st.empty()
+        
+        update_ui_callback = _build_ui_callback(timer_box, progress_bar, status_box, log_box, max_pct=99)
+
+        with st.spinner("Running v5 full pipeline: Expert Council evaluation, chunked drafting, Peer Review Board, and experiment assessment..."):
+            orchestrator = ResearchOrchestrator(model_name=model_choice, base_url=base_url, temperature=temperature)
+            final_state = orchestrator.run_v5_pipeline(
+                topic=st.session_state.selected_topic,
+                target_deliverable=st.session_state.get("selected_deliverable", deliverable_choice),
+                pool_action=st.session_state.get("selected_pool_action", pool_action),
+                uploaded_files=st.session_state.get("parsed_files", parsed_files_list),
+                allow_code_execution=allow_code,
+                progress_callback=update_ui_callback
+            )
+            st.session_state.research_state = final_state
+            st.session_state.workflow_stage = "completed"
+            progress_bar.progress(100, text="✅ v5 Research Workflow Completed Successfully!")
+            st.success("🎉 v5 Publication-ready academic deliverable generated with Expert Council, Peer Review, and Audit Trail!")
+
+    # v4: STAGE 2: Interactive User Consultation & Alignment Checkpoint
     if st.session_state.workflow_stage == "consultation" and st.session_state.research_state:
         state: ResearchState = st.session_state.research_state
         disc, rec_method, _ = DomainIntelligenceEngine.classify_domain_and_methodology(state.topic)
@@ -515,7 +602,7 @@ def main():
             st.session_state.workflow_stage = "executing"
             st.rerun()
 
-    # STAGE 3 & 4: Execute Investigation & Draft Deliverable
+    # v4: STAGE 3 & 4: Execute Investigation & Draft Deliverable
     if st.session_state.workflow_stage == "executing" and st.session_state.research_state:
         st.markdown("---")
         st.markdown("### 📡 Stage 3 & 4: Executing Investigation & Drafting Citation-Backed Deliverable")
@@ -525,49 +612,7 @@ def main():
         status_box = st.empty()
         log_box = st.empty()
         
-        def update_ui_callback(current_state: ResearchState):
-            elapsed_sec = time.time() - current_state.start_time
-            elapsed_str = f"{int(elapsed_sec) // 60:02d}:{int(elapsed_sec) % 60:02d}"
-            if current_state.progress_percentage > 5 and current_state.progress_percentage < 100:
-                total_est = (elapsed_sec / (current_state.progress_percentage / 100.0))
-                rem = max(0, int(total_est - elapsed_sec))
-                eta_str = f"~{rem // 60:02d}:{rem % 60:02d}"
-            else:
-                eta_str = "Calculating..."
-
-            timer_box.markdown(f"""
-            <div class="apple-timer-banner">
-                <div style="font-size: 0.88rem; color: #8E8E93; font-weight: 600; letter-spacing: 0.05em;">⏱️ ELAPSED TIME &amp; ETA TRACKER</div>
-                <div style="font-size: 2.2rem; font-weight: 700; color: #30D158; font-family: 'SF Mono', monospace; margin: 4px 0;">
-                    {elapsed_str} <span style="font-size: 1.2rem; color: #8E8E93; font-weight: 400;">| EST. REMAINING: {eta_str}</span>
-                </div>
-                <div style="font-size: 0.95rem; color: #0A84FF; font-weight: 500;">● Deep Real Scraping &amp; Analytical Reasoning in Progress...</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            progress_bar.progress(
-                current_state.progress_percentage,
-                text=f"Current Workflow: {current_state.current_stage} ({current_state.progress_percentage}%)"
-            )
-            
-            latest_log = current_state.logs[-1] if current_state.logs else None
-            if latest_log:
-                status_html = f"""
-                <div class="status-card-apple">
-                    <span style="color: #0A84FF; font-weight: 600; font-size: 0.9rem;">● ACTIVE AGENT ROLE</span><br>
-                    <strong style="font-size: 1.2rem; color: #FFFFFF;">{latest_log.agent_name}</strong><br>
-                    <span style="color: #F5F5F7; font-size: 1rem;">Action: {latest_log.action}</span><br>
-                    <span style="color: #8E8E93; font-size: 0.88rem;">Details: {latest_log.details or 'Processing task...'}</span>
-                </div>
-                """
-                status_box.markdown(status_html, unsafe_allow_html=True)
-            
-            logs_data = []
-            for log in reversed(current_state.logs[-12:]):
-                status_icon = "🟢" if log.status == "completed" else "🟡" if log.status == "running" else "🔴"
-                logs_data.append(f"<span style='color:#636366;'>[{log.timestamp}]</span> {status_icon} <strong style='color:#0A84FF;'>[{log.agent_name}]</strong> ➔ <span style='color:#FFFFFF;'>{log.stage}:</span> {log.action}")
-            
-            log_box.markdown(f'<div class="apple-terminal">{"<br>".join(logs_data)}</div>', unsafe_allow_html=True)
+        update_ui_callback = _build_ui_callback(timer_box, progress_bar, status_box, log_box)
 
         with st.spinner("Synthesizing citations, generating tables, and formatting academic Markdown under 'Prof' standards..."):
             orchestrator = ResearchOrchestrator(model_name=model_choice, base_url=base_url, temperature=temperature)
@@ -589,16 +634,29 @@ def main():
         st.markdown("---")
         st.markdown("### 📑 Research Outputs & Artifacts Inspection")
         
-        tab_logs, tab_lit, tab_gaps, tab_sim, tab_ms = st.tabs([
+        tab_labels = [
             "📡 Activity Audit",
             f"📚 Scraped Literature ({len(state.extracted_papers)})",
             f"🔍 Research Gaps ({len(state.identified_gaps)})",
             "🧪 Investigation Protocol",
-            "📄 Publication-Ready Deliverable (.md)"
-        ])
+            "📄 Publication-Ready Deliverable (.md)",
+        ]
+        if v5_mode or state.expert_reviews:
+            tab_labels.extend([
+                f"🧠 Expert Council ({len(state.expert_reviews)})",
+                f"🔬 Peer Review ({len(state.peer_reviews)})",
+                f"🧪 Experiments ({len(state.experiments)})",
+                "🕸️ Process Graph",
+                "📋 Audit Log",
+                "📚 History",
+            ])
+        
+        tabs = st.tabs(tab_labels)
+        tab_idx = 0
 
         # TAB 1: Activity Logs
-        with tab_logs:
+        with tabs[tab_idx]:
+            tab_idx += 1
             st.markdown("#### Full Agent Execution Audit Log")
             log_df_data = [
                 {
@@ -614,7 +672,8 @@ def main():
             st.dataframe(pd.DataFrame(log_df_data), use_container_width=True)
 
         # TAB 2: Literature Review
-        with tab_lit:
+        with tabs[tab_idx]:
+            tab_idx += 1
             st.markdown("#### Executive Literature Synthesis ('Prof' Standards)")
             if state.literature_summary:
                 st.markdown(f'<div class="apple-card">{state.literature_summary}</div>', unsafe_allow_html=True)
@@ -630,7 +689,8 @@ def main():
                         st.markdown(f"**Source URL:** [{paper.url}]({paper.url})")
 
         # TAB 3: Research Gaps
-        with tab_gaps:
+        with tabs[tab_idx]:
+            tab_idx += 1
             st.markdown("#### Identified Research Gaps & Contradictions")
             for gap in state.identified_gaps:
                 st.markdown(f"""
@@ -654,7 +714,8 @@ def main():
                 """, unsafe_allow_html=True)
 
         # TAB 4: Investigation Protocol
-        with tab_sim:
+        with tabs[tab_idx]:
+            tab_idx += 1
             st.markdown("#### Methodological & Empirical Investigation")
             if not state.simulation_results:
                 st.info("No investigation was recorded.")
@@ -678,7 +739,8 @@ def main():
                             st.error(sim.stderr)
 
         # TAB 5: Final Deliverable
-        with tab_ms:
+        with tabs[tab_idx]:
+            tab_idx += 1
             st.markdown(f"#### 📄 Publication-Ready Deliverable: {state.target_deliverable.split(' (~')[0]} (.md)")
             
             col_dl1, col_dl2 = st.columns([1, 3])
@@ -699,6 +761,111 @@ def main():
             
             with st.expander("📋 View Raw Markdown Source Code", expanded=False):
                 st.code(state.final_manuscript_md, language="markdown")
+
+        # v5 TABS
+        if v5_mode or state.expert_reviews:
+            # TAB 6: Expert Council
+            with tabs[tab_idx]:
+                tab_idx += 1
+                st.markdown("#### 🧠 Domain Expert Council Evaluations (7 Specialists)")
+                if not state.expert_reviews:
+                    st.info("No expert evaluations recorded. Enable v5 mode to run the Expert Council.")
+                else:
+                    for er in state.expert_reviews:
+                        dissent_badge = "<span style='color:#e74c3c; font-weight:700;'>⚠️ DISSENT</span>" if er.dissent else "<span style='color:#30D158; font-weight:700;'>✅ CONCURS</span>"
+                        st.markdown(f"""
+                        <div class="expert-card">
+                            <h4 style="color: #3498db !important; margin-bottom: 0.3rem;">🎓 {er.expert_name}</h4>
+                            <p style="color: #8E8E93; font-size: 0.9rem;">{er.domain}</p>
+                            <p>Score: <strong>{er.score:.2f}</strong> | Confidence: <strong>{er.confidence:.2f}</strong> | {dissent_badge}</p>
+                            {f'<p style="color:#e74c3c;"><strong>Dissent Reason:</strong> {er.dissent_reason}</p>' if er.dissent else ''}
+                            <details><summary style="color:#0A84FF;">Criticisms ({len(er.criticisms)})</summary><ul>{''.join(f'<li>{c}</li>' for c in er.criticisms)}</ul></details>
+                            <details><summary style="color:#30D158;">Suggestions ({len(er.suggestions)})</summary><ul>{''.join(f'<li>{s}</li>' for s in er.suggestions)}</ul></details>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+            # TAB 7: Peer Review
+            with tabs[tab_idx]:
+                tab_idx += 1
+                st.markdown("#### 🔬 Peer Review Board (Editor + 5 Reviewers)")
+                if not state.peer_reviews:
+                    st.info("No peer reviews recorded. Enable v5 mode to run the Peer Review Board.")
+                else:
+                    for pr in state.peer_reviews:
+                        color = {"ACCEPT": "#30D158", "MINOR_REVISION": "#FF9F0A", "MAJOR_REVISION": "#e74c3c", "REJECT": "#c0392b"}.get(pr.verdict, "#8E8E93")
+                        st.markdown(f"""
+                        <div class="peer-card">
+                            <h4 style="color: {color} !important; margin-bottom: 0.3rem;">📋 Round {pr.round} — {pr.reviewer}</h4>
+                            <p>Verdict: <strong style="color:{color};">{pr.verdict}</strong> | Score: <strong>{pr.score:.2f}</strong></p>
+                            <p style="color: #F5F5F7;">{pr.comments}</p>
+                            {f'<p style="color:#e74c3c;"><strong>Issues:</strong> {pr.specific_issues}</p>' if pr.specific_issues else ''}
+                        </div>
+                        """, unsafe_allow_html=True)
+
+            # TAB 8: Experiments
+            with tabs[tab_idx]:
+                tab_idx += 1
+                st.markdown("#### 🧪 Experiment Designs & Notifications")
+                if not state.experiments:
+                    st.info("No experiments required for this topic.")
+                else:
+                    for exp in state.experiments:
+                        status_color = "#30D158" if exp.status == "COMPLETED" else "#FF9F0A" if exp.status == "PENDING_USER" else "#8E8E93"
+                        st.markdown(f"""
+                        <div class="apple-card" style="border-left: 4px solid {status_color};">
+                            <h4 style="color: {status_color} !important;">🔬 {exp.title}</h4>
+                            <p><strong>ID:</strong> <code>{exp.experiment_id}</code></p>
+                            <p><strong>Status:</strong> <span style="color:{status_color};">{exp.status}</span></p>
+                            <p><strong>Objective:</strong> {exp.objective}</p>
+                            <p><strong>Hypothesis:</strong> {exp.hypothesis}</p>
+                            <p><strong>Scope:</strong> {exp.scope}</p>
+                            <p><strong>Duration:</strong> {exp.duration_estimate}</p>
+                            {f'<details><summary>Procedure</summary><ol>{"".join(f"<li>{s}</li>" for s in exp.procedure)}</ol></details>' if exp.procedure else ''}
+                        </div>
+                        """, unsafe_allow_html=True)
+                        if exp.status == "PENDING_USER":
+                            st.warning(f"⚠️ USER ACTION REQUIRED: Perform experiment {exp.experiment_id} and submit results to continue.")
+
+            # TAB 9: Process Graph
+            with tabs[tab_idx]:
+                tab_idx += 1
+                st.markdown("#### 🕸️ Process Network Graph")
+                if state.graph_path and os.path.exists(state.graph_path):
+                    with open(state.graph_path, "r", encoding="utf-8") as f:
+                        html_content = f.read()
+                    st.components.v1.html(html_content, height=600, scrolling=True)
+                    with open(state.graph_path, "rb") as f:
+                        st.download_button("📥 Download Interactive Graph (.html)", f, file_name=f"{state.project_id}_graph.html", mime="text/html")
+                else:
+                    st.info("Process graph not yet generated. It will be created after running the v5 pipeline.")
+
+            # TAB 10: Audit Log
+            with tabs[tab_idx]:
+                tab_idx += 1
+                st.markdown("#### 📋 Full Audit Log (Markdown)")
+                if state.audit_log_path and os.path.exists(state.audit_log_path):
+                    with open(state.audit_log_path, "r", encoding="utf-8") as f:
+                        audit_content = f.read()
+                    st.text_area("Audit Log", audit_content, height=600)
+                    with open(state.audit_log_path, "rb") as f:
+                        st.download_button("📥 Download Complete Audit Log (.md)", f, file_name=f"{state.project_id}_COMPLETE.md", mime="text/markdown")
+                else:
+                    st.info("Audit log not yet generated. It will be created after running the v5 pipeline.")
+
+            # TAB 11: Project History
+            with tabs[tab_idx]:
+                tab_idx += 1
+                st.markdown("#### 📚 Project History & Continuation")
+                try:
+                    ph = ProjectHistory()
+                    projects = ph.list_projects()
+                    if projects:
+                        df = pd.DataFrame(projects)
+                        st.dataframe(df, use_container_width=True)
+                    else:
+                        st.info("No saved projects yet. Run v5 pipeline to save projects automatically.")
+                except Exception as e:
+                    st.error(f"Could not load project history: {e}")
 
 
 if __name__ == "__main__":

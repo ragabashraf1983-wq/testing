@@ -1,4 +1,4 @@
-# Autonomous Academic Research Agent - Requirements
+# Autonomous Academic Research Agent v5 - Requirements
 # Run with: pip install -r requirements.txt
 
 streamlit>=1.35.0
@@ -11,3 +11,6 @@ matplotlib>=3.8.0
 duckduckgo-search>=5.3.0
 beautifulsoup4>=4.12.0
 lxml>=5.2.0
+
+# v5 additions
+networkx>=3.2.1
